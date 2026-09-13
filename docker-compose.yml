@@ -1,12 +1,28 @@
 services:
   mongo:
-    image: mongo:7
+    image: mongo:8.0
     container_name: rosterup-mongo
     restart: unless-stopped
-    ports:
-      - "27017:27017"
     volumes:
-      - rosterup-mongo-data:/data/db
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval \"db.adminCommand('ping').ok\" | grep 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    container_name: rosterup-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: 3000
+      MONGO_URI: mongodb://mongo:27017/rosterup
+    depends_on:
+      mongo:
+        condition: service_healthy
 
 volumes:
-  rosterup-mongo-data:
+  mongo_data:

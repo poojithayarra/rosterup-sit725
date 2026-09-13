@@ -32,6 +32,15 @@ app.use('/api/workplaces', workplaceRoutes);
 app.use('/api/shifts', shiftRoutes);
 app.use('/api/manager', managerRoutes);
 
+// SIT725 HD Assessment - Student Identity Endpoint
+app.get('/api/student', (req, res) => {
+    res.json({
+        name: 'Poojitha Yarra',
+        studentId: 's226171127'
+    });
+});
+
+
 // Socket.io needs to attach to the underlying HTTP server (not the Express
 // app directly) so it can hijack the same port for the WebSocket upgrade
 // handshake — this is why app.listen() below became server.listen().
