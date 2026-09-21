@@ -6,14 +6,9 @@ const { resolveUserWorkplaceId } = require('./chat-room.service');
 function createHttpError(message, statusCode) {
     const error = new Error(message);
     error.statusCode = statusCode;
-    return error;
 };
 
 // Employee (or manager) posts one of their own shifts for cover — FR-15.
-// workplace and posted_by are always resolved server-side from the
-// authenticated user rather than trusted from the request body — the old
-// version accepted both directly from the client, which would have let
-// anyone post a shift into any workplace under anyone else's name.
 async function postShiftsService(shiftInput, userId, dependencies = {}) {
     if (!userId) {
         throw createHttpError('An authenticated user is required', 401);
@@ -58,10 +53,7 @@ async function postShiftsService(shiftInput, userId, dependencies = {}) {
 }
 
 
-// Employee withdraws a claim they made on a shift — FR-13's undo path. Only
-// the employee who actually claimed the shift can withdraw it (scoped by
-// claimed_by in the filter, same atomic-update trick as claimShift), so one
-// employee can't reopen a shift someone else claimed.
+// Employee withdraws a claim they made on a shift — FR-13's undo path.
 async function withdrawShiftsService(shiftId, userId, dependencies = {}) {
     if (!userId) {
         throw createHttpError('An authenticated user is required', 401);
@@ -86,8 +78,6 @@ async function withdrawShiftsService(shiftId, userId, dependencies = {}) {
 }
 
 async function getShiftsService(filter) {
-    // Populated so the client can show who posted the shift without a
-    // separate lookup (same pattern as listPendingClaims below).
     const shifts = await Shift.find(filter)
         .populate('posted_by', 'first_name last_name')
         .sort({ shift_date: 1, start_time: 1 });
@@ -101,6 +91,7 @@ async function listPendingClaims(managerId, dependencies = {}) {
 
     const ShiftModel = dependencies.ShiftModel || Shift;
     const WorkplaceModel = dependencies.WorkplaceModel || Workplace;
+
     const workplace = await WorkplaceModel.findOne({
         manager_id: managerId,
         active: true,
@@ -121,11 +112,6 @@ async function listPendingClaims(managerId, dependencies = {}) {
         .lean();
 }
 
-// Employee claims an open shift — FR-13 / FR-14. The shift moves straight
-// to 'pending' (not 'covered') so the claim still needs manager review via
-// processShiftClaim below; scoping to status: 'open' in the filter (rather
-// than checking shift.status after the fact) also makes this atomic, so two
-// employees racing to claim the same shift can't both succeed.
 async function claimShift(shiftId, employeeId, dependencies = {}) {
     if (!employeeId) {
         throw createHttpError('An authenticated employee is required', 401);
@@ -154,13 +140,6 @@ async function claimShift(shiftId, employeeId, dependencies = {}) {
 
 const VALID_CLAIM_ACTIONS = ['approve', 'reject'];
 
-// Manager approves (mark covered) or rejects (reopen) a pending shift
-// claim — FR-18 / FR-19. Mirrors listPendingClaims' own pattern for
-// resolving "this manager's workplace", and manager.controller.js's
-// processEmployeeRequest for using one generic "not found" message
-// whether the shift doesn't exist, isn't pending, or belongs to a
-// different manager's workplace, so a manager can't learn anything about
-// another workplace's shifts just by guessing ids.
 async function processShiftClaim(shiftId, managerId, action, dependencies = {}) {
     if (!managerId) {
         throw createHttpError('An authenticated manager is required', 401);
@@ -196,7 +175,6 @@ async function processShiftClaim(shiftId, managerId, action, dependencies = {}) 
     if (action === 'approve') {
         shift.status = 'covered';
     } else {
-        // Reject: back to the open pool for someone else to claim.
         shift.status = 'open';
         shift.claimed_by = null;
     }
@@ -205,6 +183,42 @@ async function processShiftClaim(shiftId, managerId, action, dependencies = {}) 
     return shift;
 }
 
+
+// FR-23: Employee withdraws their own posted shift.
+// The shift is NOT deleted. It is marked as cancelled.
+// Only open and unclaimed shifts can be withdrawn.
+async function withdrawPostedShift(shiftId, userId) {
+    if (!userId) {
+        throw createHttpError('An authenticated user is required', 401);
+    }
+
+    const shift = await Shift.findById(shiftId);
+
+    if (!shift) {
+        throw createHttpError('Shift not found', 404);
+    }
+
+    if (shift.posted_by.toString() !== userId.toString()) {
+        throw createHttpError(
+            'You can only withdraw a shift that you posted',
+            403
+        );
+    }
+
+    if (shift.status !== 'open' || shift.claimed_by) {
+        throw createHttpError(
+            'Only open and unclaimed shifts can be withdrawn',
+            409
+        );
+    }
+
+    shift.status = 'cancelled';
+    await shift.save();
+
+    return shift;
+}
+
+
 module.exports = {
     getShiftsService,
     listPendingClaims,
@@ -212,6 +226,5 @@ module.exports = {
     withdrawShiftsService,
     claimShift,
     processShiftClaim,
+    withdrawPostedShift,
 };
-    
-

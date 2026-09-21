@@ -10,28 +10,41 @@ const postShiftsController = async (req, res) => {
 
         const shiftBody = req.body;
 
-        const postedShift = await shiftsService.postShiftsService(shiftBody, employeeId);
+        const postedShift = await shiftsService.postShiftsService(
+            shiftBody,
+            employeeId
+        );
 
         res.status(200).json(postedShift);
     } catch (error) {
         const statusCode = error.statusCode || 500;
 
         if (error.name == "ValidationError") {
-            res.status(500).json({message: `Data inputted incorrectly. Please check the ${Object.keys(error.errors).join(", ")} fields and ensure they are inputted correctly.`})
+            res.status(500).json({
+                message: `Data inputted incorrectly. Please check the ${Object.keys(error.errors).join(", ")} fields and ensure they are inputted correctly.`
+            });
         } else if (statusCode !== 500) {
-            res.status(statusCode).json({ message: error.message });
+            res.status(statusCode).json({
+                message: error.message
+            });
         } else {
-            res.status(500).json({ message: error.message, error: error });
+            res.status(500).json({
+                message: error.message,
+                error: error
+            });
         }
     }
 };
+
 
 const withdrawShiftsController = async (req, res) => {
     try {
         const employeeId = req.user?.id || req.user?._id;
 
         if (!employeeId) {
-            return res.status(401).json({ message: 'Authentication required.' });
+            return res.status(401).json({
+                message: 'Authentication required.'
+            });
         }
 
         const { shiftId } = req.query;
@@ -42,7 +55,11 @@ const withdrawShiftsController = async (req, res) => {
             });
         }
 
-        const withdrawnShift = await shiftsService.withdrawShiftsService(shiftId, employeeId);
+        const withdrawnShift =
+            await shiftsService.withdrawShiftsService(
+                shiftId,
+                employeeId
+            );
 
         if (!withdrawnShift) {
             return res.status(404).json({
@@ -54,11 +71,13 @@ const withdrawShiftsController = async (req, res) => {
 
     } catch (error) {
         const statusCode = error.statusCode || 500;
+
         return res.status(statusCode).json({
             message: error.message
         });
     }
 };
+
 
 const getOpenShiftsController = async (req, res) => {
     try {
@@ -68,19 +87,30 @@ const getOpenShiftsController = async (req, res) => {
 
         if (workplace) filter.workplace = workplace;
         if (claimed_by) filter.claimed_by = claimed_by;
-        filter.status = status || "open";
+
+        // Only filter by status when a status is explicitly provided.
+        // This allows cancelled shifts to remain visible in shift history.
+        if (status) {
+            filter.status = status;
+        }
 
         const shifts = await shiftsService.getShiftsService(filter);
 
         res.status(200).json(shifts);
     } catch (error) {
         if (error.name == "CastError") {
-            res.status(500).json({ message: `Unable to cast value from ${error.valueType} to ${error.kind}` })
+            res.status(500).json({
+                message: `Unable to cast value from ${error.valueType} to ${error.kind}`
+            });
         } else {
-            res.status(500).json({ message: error.message, error: error });
+            res.status(500).json({
+                message: error.message,
+                error: error
+            });
         }
     }
 };
+
 
 function buildListPendingClaimsController(service = shiftsService) {
     return async function listPendingClaims(req, res) {
@@ -116,6 +146,7 @@ function buildListPendingClaimsController(service = shiftsService) {
 
 const listPendingClaims = buildListPendingClaimsController();
 
+
 // PUT /shifts/:id/claim — manager approves or rejects a pending claim.
 function buildProcessShiftClaimController(service = shiftsService) {
     return async function processShiftClaim(req, res) {
@@ -124,7 +155,11 @@ function buildProcessShiftClaimController(service = shiftsService) {
             const { id } = req.params;
             const { action } = req.body || {};
 
-            const shift = await service.processShiftClaim(id, managerId, action);
+            const shift = await service.processShiftClaim(
+                id,
+                managerId,
+                action
+            );
 
             return res.status(200).json({ shift });
         } catch (error) {
@@ -140,6 +175,7 @@ function buildProcessShiftClaimController(service = shiftsService) {
 }
 
 const processShiftClaim = buildProcessShiftClaimController();
+
 
 // POST /shifts/:id/claim — employee claims an open shift (FR-13 / FR-14).
 function buildClaimShiftController(service = shiftsService) {
@@ -171,6 +207,47 @@ function buildClaimShiftController(service = shiftsService) {
 
 const claimShift = buildClaimShiftController();
 
+
+// POST /shifts/:id/withdraw — employee withdraws their own posted shift (FR-23).
+const withdrawPostedShift = async (req, res) => {
+    try {
+        const employeeId = req.user?.id || req.user?._id;
+
+        if (!employeeId) {
+            return res.status(401).json({
+                message: 'Authentication required.'
+            });
+        }
+
+        const { id } = req.params;
+
+        if (!id) {
+            return res.status(400).json({
+                message: 'Shift ID is required.'
+            });
+        }
+
+        const shift = await shiftsService.withdrawPostedShift(
+            id,
+            employeeId
+        );
+
+        return res.status(200).json({
+            message: 'Shift withdrawn successfully',
+            shift
+        });
+    } catch (error) {
+        console.error('Error withdrawing shift:', error);
+
+        const statusCode = error.statusCode || 500;
+
+        return res.status(statusCode).json({
+            message: error.message || 'Failed to withdraw shift'
+        });
+    }
+};
+
+
 module.exports = {
     getOpenShiftsController,
     buildListPendingClaimsController,
@@ -180,5 +257,6 @@ module.exports = {
     buildClaimShiftController,
     claimShift,
     postShiftsController,
-    withdrawShiftsController
+    withdrawShiftsController,
+    withdrawPostedShift
 };

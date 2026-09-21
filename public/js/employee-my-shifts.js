@@ -1,5 +1,6 @@
 document.addEventListener('DOMContentLoaded', () => {
   const token = localStorage.getItem('rosterup_token');
+
   if (!token) {
     window.location.href = 'sign-in.html';
     return;
@@ -7,21 +8,43 @@ document.addEventListener('DOMContentLoaded', () => {
 
   const userJson = localStorage.getItem('rosterup_user');
   const user = userJson ? JSON.parse(userJson) : null;
-  if (user) renderSidebar(user);
+
+  if (user) {
+    renderSidebar(user);
+  }
 
   document.getElementById('logoutLink').addEventListener('click', handleLogout);
   document.getElementById('postShiftForm').addEventListener('submit', handlePostShift);
-  document.getElementById('claimedShiftsList').addEventListener('click', handleWithdrawClick);
 
+  // Existing claimed-shift withdrawal
+  document
+    .getElementById('claimedShiftsList')
+    .addEventListener('click', handleWithdrawClick);
+
+  // FR-23: withdraw a shift posted by the employee
+  document
+    .getElementById('postedShiftsList')
+    .addEventListener('click', handleWithdrawPostedShiftClick);
+
+  loadPostedShifts();
   loadClaimedShifts();
 });
 
+
 function renderSidebar(user) {
-  document.getElementById('userName').textContent = `${user.first_name} ${user.last_name}`;
-  document.getElementById('userRole').textContent = capitalize(user.role);
-  const initials = `${user.first_name[0] || ''}${user.last_name[0] || ''}`.toUpperCase();
-  document.getElementById('userAvatar').textContent = initials || '--';
+  document.getElementById('userName').textContent =
+    `${user.first_name} ${user.last_name}`;
+
+  document.getElementById('userRole').textContent =
+    capitalize(user.role);
+
+  const initials =
+    `${user.first_name[0] || ''}${user.last_name[0] || ''}`.toUpperCase();
+
+  document.getElementById('userAvatar').textContent =
+    initials || '--';
 }
+
 
 async function handlePostShift(e) {
   e.preventDefault();
@@ -39,7 +62,7 @@ async function handlePostShift(e) {
   };
 
   submitBtn.disabled = true;
-  submitBtn.textContent = 'Posting…';
+  submitBtn.textContent = 'Posting...';
   messageBox.className = 'alert-box hidden';
 
   try {
@@ -62,38 +85,356 @@ async function handlePostShift(e) {
     const data = await response.json();
 
     if (response.ok) {
-      messageBox.textContent = 'Shift posted! It now shows up in Open Shifts for your team to claim.';
-      messageBox.className = 'alert-box alert-success';
+      messageBox.textContent =
+        'Shift posted! It now shows up in Open Shifts for your team to claim.';
+
+      messageBox.className =
+        'alert-box alert-success';
+
       document.getElementById('postShiftForm').reset();
+
+      // FR-23: refresh posted shifts after creating a shift
+      loadPostedShifts();
     } else {
-      messageBox.textContent = data.message || 'Could not post this shift. Please check the details and try again.';
-      messageBox.className = 'alert-box alert-error';
+      messageBox.textContent =
+        data.message ||
+        'Could not post this shift. Please check the details and try again.';
+
+      messageBox.className =
+        'alert-box alert-error';
     }
+
   } catch (err) {
     console.error('Error posting shift:', err);
-    messageBox.textContent = 'Connection error. Please try again.';
-    messageBox.className = 'alert-box alert-error';
+
+    messageBox.textContent =
+      'Connection error. Please try again.';
+
+    messageBox.className =
+      'alert-box alert-error';
+
   } finally {
     submitBtn.disabled = false;
     submitBtn.textContent = 'Post Shift';
   }
 }
 
-async function loadClaimedShifts() {
-  const listEl = document.getElementById('claimedShiftsList');
+
+/* =========================================================
+   FR-23 — MY POSTED SHIFTS
+   ========================================================= */
+
+async function loadPostedShifts() {
+  const listEl = document.getElementById('postedShiftsList');
   const token = localStorage.getItem('rosterup_token');
+
   const userJson = localStorage.getItem('rosterup_user');
   const user = userJson ? JSON.parse(userJson) : null;
 
   if (!user) {
-    listEl.innerHTML = '<div class="emp-empty-card"><p>Could not load your claimed shifts.</p></div>';
+    listEl.innerHTML =
+      '<div class="emp-empty-card"><p>Could not load your posted shifts.</p></div>';
     return;
   }
 
   try {
-    const response = await fetch(`/api/shifts?status=pending&claimed_by=${encodeURIComponent(user.id)}`, {
-      headers: { Authorization: `Bearer ${token}` }
+    /*
+     * Request all shifts from the employee's workplace.
+     * We filter posted_by on the client so cancelled shifts remain visible
+     * in this employee's posted-shift history.
+     */
+    const response = await fetch('/api/shifts?status=open', {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
     });
+
+    if (response.status === 401) {
+      localStorage.removeItem('rosterup_token');
+      localStorage.removeItem('rosterup_user');
+      window.location.href = 'sign-in.html';
+      return;
+    }
+
+    /*
+     * The existing GET /api/shifts endpoint defaults to open shifts.
+     * FR-23 also needs cancelled shifts to remain visible, so we make
+     * an additional request without a status filter.
+     */
+    const allResponse = await fetch('/api/shifts', {
+      headers: {
+        Authorization: `Bearer ${token}`
+      }
+    });
+
+    if (allResponse.status === 401) {
+      localStorage.removeItem('rosterup_token');
+      localStorage.removeItem('rosterup_user');
+      window.location.href = 'sign-in.html';
+      return;
+    }
+
+    const shifts = await allResponse.json();
+
+    if (!allResponse.ok || !Array.isArray(shifts)) {
+      listEl.innerHTML =
+        '<div class="emp-empty-card"><p>Could not load your posted shifts.</p></div>';
+      return;
+    }
+
+    const myPostedShifts = shifts.filter(shift => {
+      const postedById =
+        shift.posted_by?._id ||
+        shift.posted_by?.id ||
+        shift.posted_by;
+
+      return String(postedById) === String(user.id);
+    });
+
+    renderPostedShifts(myPostedShifts);
+
+  } catch (err) {
+    console.error('Failed to load posted shifts:', err);
+
+    listEl.innerHTML =
+      '<div class="emp-empty-card"><p>Connection error. Please try again.</p></div>';
+  }
+}
+
+
+function renderPostedShifts(shifts) {
+  const listEl = document.getElementById('postedShiftsList');
+
+  if (shifts.length === 0) {
+    listEl.innerHTML =
+      '<div class="emp-empty-card"><p>You have not posted any shifts yet.</p></div>';
+    return;
+  }
+
+  listEl.innerHTML =
+    shifts.map(postedShiftCardHtml).join('');
+}
+
+
+function postedShiftCardHtml(shift) {
+  const date = new Date(shift.shift_date);
+
+  const dayShort =
+    date.toLocaleDateString('en-US', {
+      weekday: 'short',
+      timeZone: 'UTC'
+    }).toUpperCase();
+
+  const dateNum =
+    date.toLocaleDateString('en-US', {
+      day: 'numeric',
+      timeZone: 'UTC'
+    });
+
+  const monthShort =
+    date.toLocaleDateString('en-US', {
+      month: 'short',
+      timeZone: 'UTC'
+    }).toUpperCase();
+
+  let statusText = 'Open';
+  let statusClass = 'eos-badge';
+
+  if (shift.status === 'cancelled') {
+    statusText = 'Cancelled';
+    statusClass = 'eos-badge';
+  } else if (shift.status === 'pending') {
+    statusText = 'Awaiting approval';
+    statusClass = 'eos-badge';
+  } else if (shift.status === 'covered') {
+    statusText = 'Covered';
+    statusClass = 'eos-badge';
+  }
+
+  let actionHtml = '';
+
+  /*
+   * FR-23 requirement:
+   * Only an open and unclaimed shift can be withdrawn.
+   */
+  if (shift.status === 'open' && !shift.claimed_by) {
+    actionHtml = `
+      <button
+        class="msh-withdraw-posted-btn"
+        data-shift-id="${escapeHtml(shift._id)}"
+      >
+        Withdraw Shift
+      </button>
+    `;
+  }
+
+  return `
+    <div class="eos-card">
+      <div class="eos-date">
+        <p class="eos-date-day">${dayShort}</p>
+        <p class="eos-date-num">${dateNum}</p>
+        <p class="eos-date-month">${monthShort}</p>
+      </div>
+
+      <div class="eos-divider"></div>
+
+      <div class="eos-body">
+        <div class="eos-body-top">
+          <div>
+            <p class="eos-role">
+              ${escapeHtml(shift.shift_role)}
+            </p>
+
+            <p class="eos-time">
+              <span class="material-icons">schedule</span>
+              ${escapeHtml(shift.start_time)}
+              — 
+              ${escapeHtml(shift.end_time)}
+            </p>
+
+            ${
+              shift.note
+                ? `<p class="eos-posted-by">${escapeHtml(shift.note)}</p>`
+                : ''
+            }
+          </div>
+
+          <span class="${statusClass}">
+            ${statusText}
+          </span>
+        </div>
+
+        <div class="eos-footer">
+          ${
+            shift.status === 'open' && !shift.claimed_by
+              ? `
+                <p>Shift is open and available for a colleague to claim.</p>
+                ${actionHtml}
+              `
+              : shift.status === 'cancelled'
+                ? `<p>This shift has been cancelled.</p>`
+                : shift.status === 'pending'
+                  ? `<p>This shift has been claimed and is awaiting manager approval.</p>`
+                  : `<p>This shift is no longer available for withdrawal.</p>`
+          }
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+
+async function handleWithdrawPostedShiftClick(e) {
+  const btn =
+    e.target.closest('.msh-withdraw-posted-btn');
+
+  if (!btn || btn.disabled) {
+    return;
+  }
+
+  const shiftId = btn.dataset.shiftId;
+  const token = localStorage.getItem('rosterup_token');
+
+  const confirmed = window.confirm(
+    'Are you sure you want to withdraw this posted shift?'
+  );
+
+  if (!confirmed) {
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Withdrawing...';
+
+  try {
+    const response = await fetch(
+      `/api/shifts/${encodeURIComponent(shiftId)}/withdraw`,
+      {
+        method: 'POST',
+        headers: token
+          ? {
+              Authorization: `Bearer ${token}`
+            }
+          : {}
+      }
+    );
+
+    if (response.status === 401) {
+      localStorage.removeItem('rosterup_token');
+      localStorage.removeItem('rosterup_user');
+      window.location.href = 'sign-in.html';
+      return;
+    }
+
+    const data =
+      await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      btn.disabled = false;
+      btn.textContent = 'Withdraw Shift';
+
+      window.alert(
+        data.message ||
+        'Could not withdraw this shift.'
+      );
+
+      return;
+    }
+
+    /*
+     * Reload the list so the cancelled shift remains visible
+     * with its new "Cancelled" status.
+     */
+    await loadPostedShifts();
+
+  } catch (err) {
+    console.error(
+      'Failed to withdraw posted shift:',
+      err
+    );
+
+    btn.disabled = false;
+    btn.textContent = 'Withdraw Shift';
+
+    window.alert(
+      'Connection error. Please try again.'
+    );
+  }
+}
+
+
+/* =========================================================
+   EXISTING CLAIMED-SHIFT FUNCTIONALITY
+   ========================================================= */
+
+async function loadClaimedShifts() {
+  const listEl =
+    document.getElementById('claimedShiftsList');
+
+  const token =
+    localStorage.getItem('rosterup_token');
+
+  const userJson =
+    localStorage.getItem('rosterup_user');
+
+  const user =
+    userJson ? JSON.parse(userJson) : null;
+
+  if (!user) {
+    listEl.innerHTML =
+      '<div class="emp-empty-card"><p>Could not load your claimed shifts.</p></div>';
+    return;
+  }
+
+  try {
+    const response = await fetch(
+      `/api/shifts?status=pending&claimed_by=${encodeURIComponent(user.id)}`,
+      {
+        headers: {
+          Authorization: `Bearer ${token}`
+        }
+      }
+    );
 
     if (response.status === 401) {
       localStorage.removeItem('rosterup_token');
@@ -105,37 +446,65 @@ async function loadClaimedShifts() {
     const shifts = await response.json();
 
     if (!response.ok || !Array.isArray(shifts)) {
-      listEl.innerHTML = '<div class="emp-empty-card"><p>Could not load your claimed shifts.</p></div>';
+      listEl.innerHTML =
+        '<div class="emp-empty-card"><p>Could not load your claimed shifts.</p></div>';
       return;
     }
 
     renderClaimedShifts(shifts);
+
   } catch (err) {
-    console.error('Failed to load claimed shifts:', err);
-    listEl.innerHTML = '<div class="emp-empty-card"><p>Connection error. Please try again.</p></div>';
+    console.error(
+      'Failed to load claimed shifts:',
+      err
+    );
+
+    listEl.innerHTML =
+      '<div class="emp-empty-card"><p>Connection error. Please try again.</p></div>';
   }
 }
 
+
 function renderClaimedShifts(shifts) {
-  const listEl = document.getElementById('claimedShiftsList');
+  const listEl =
+    document.getElementById('claimedShiftsList');
 
   if (shifts.length === 0) {
-    listEl.innerHTML = '<div class="emp-empty-card"><p>You haven\'t claimed any shifts awaiting approval right now.</p></div>';
+    listEl.innerHTML =
+      '<div class="emp-empty-card"><p>You haven\'t claimed any shifts awaiting approval right now.</p></div>';
     return;
   }
 
-  listEl.innerHTML = shifts.map(claimedShiftCardHtml).join('');
+  listEl.innerHTML =
+    shifts.map(claimedShiftCardHtml).join('');
 }
+
 
 function claimedShiftCardHtml(shift) {
   const date = new Date(shift.shift_date);
-  const dayShort = date.toLocaleDateString('en-US', { weekday: 'short', timeZone: 'UTC' }).toUpperCase();
-  const dateNum = date.toLocaleDateString('en-US', { day: 'numeric', timeZone: 'UTC' });
-  const monthShort = date.toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }).toUpperCase();
 
-  const postedByName = shift.posted_by && shift.posted_by.first_name
-    ? `${shift.posted_by.first_name} ${shift.posted_by.last_name}`
-    : 'a coworker';
+  const dayShort =
+    date.toLocaleDateString('en-US', {
+      weekday: 'short',
+      timeZone: 'UTC'
+    }).toUpperCase();
+
+  const dateNum =
+    date.toLocaleDateString('en-US', {
+      day: 'numeric',
+      timeZone: 'UTC'
+    });
+
+  const monthShort =
+    date.toLocaleDateString('en-US', {
+      month: 'short',
+      timeZone: 'UTC'
+    }).toUpperCase();
+
+  const postedByName =
+    shift.posted_by && shift.posted_by.first_name
+      ? `${shift.posted_by.first_name} ${shift.posted_by.last_name}`
+      : 'a coworker';
 
   return `
     <div class="eos-card">
@@ -144,40 +513,79 @@ function claimedShiftCardHtml(shift) {
         <p class="eos-date-num">${dateNum}</p>
         <p class="eos-date-month">${monthShort}</p>
       </div>
+
       <div class="eos-divider"></div>
+
       <div class="eos-body">
         <div class="eos-body-top">
           <div>
-            <p class="eos-role">${escapeHtml(shift.shift_role)}</p>
-            <p class="eos-time"><span class="material-icons">schedule</span> ${escapeHtml(shift.start_time)} — ${escapeHtml(shift.end_time)}</p>
-            <p class="eos-posted-by">Covering for <strong>${escapeHtml(postedByName)}</strong></p>
+            <p class="eos-role">
+              ${escapeHtml(shift.shift_role)}
+            </p>
+
+            <p class="eos-time">
+              <span class="material-icons">schedule</span>
+              ${escapeHtml(shift.start_time)}
+              —
+              ${escapeHtml(shift.end_time)}
+            </p>
+
+            <p class="eos-posted-by">
+              Covering for
+              <strong>${escapeHtml(postedByName)}</strong>
+            </p>
           </div>
-          <span class="eos-badge">Awaiting approval</span>
+
+          <span class="eos-badge">
+            Awaiting approval
+          </span>
         </div>
+
         <div class="eos-footer">
           <p>Manager still needs to approve this claim</p>
-          <button class="msh-withdraw-btn" data-shift-id="${shift._id}">Withdraw Claim</button>
+
+          <button
+            class="msh-withdraw-btn"
+            data-shift-id="${shift._id}"
+          >
+            Withdraw Claim
+          </button>
         </div>
       </div>
     </div>
   `;
 }
 
-async function handleWithdrawClick(e) {
-  const btn = e.target.closest('.msh-withdraw-btn');
-  if (!btn || btn.disabled) return;
 
-  const shiftId = btn.dataset.shiftId;
-  const token = localStorage.getItem('rosterup_token');
+async function handleWithdrawClick(e) {
+  const btn =
+    e.target.closest('.msh-withdraw-btn');
+
+  if (!btn || btn.disabled) {
+    return;
+  }
+
+  const shiftId =
+    btn.dataset.shiftId;
+
+  const token =
+    localStorage.getItem('rosterup_token');
 
   btn.disabled = true;
-  btn.textContent = 'Withdrawing…';
+  btn.textContent = 'Withdrawing...';
 
   try {
-    const response = await fetch(`/api/shifts/withdraw?shiftId=${encodeURIComponent(shiftId)}`, {
-      method: 'PUT',
-      headers: token ? { Authorization: `Bearer ${token}` } : {}
-    });
+    const response = await fetch(
+      `/api/shifts/withdraw?shiftId=${encodeURIComponent(shiftId)}`,
+      {
+        method: 'PUT',
+        headers: token
+          ? {
+              Authorization: `Bearer ${token}`
+            }
+          : {}
+      }
+    );
 
     if (response.status === 401) {
       localStorage.removeItem('rosterup_token');
@@ -189,47 +597,78 @@ async function handleWithdrawClick(e) {
     if (!response.ok) {
       btn.disabled = false;
       btn.textContent = 'Withdraw Claim';
-      const data = await response.json().catch(() => ({}));
-      btn.title = data.message || 'Could not withdraw this claim.';
+
+      const data =
+        await response.json().catch(() => ({}));
+
+      btn.title =
+        data.message ||
+        'Could not withdraw this claim.';
+
       return;
     }
 
-    // Reload rather than just removing the card locally, so the list stays
-    // correct even if something else changed the shift in the meantime.
     loadClaimedShifts();
+
   } catch (err) {
-    console.error('Failed to withdraw claim:', err);
+    console.error(
+      'Failed to withdraw claim:',
+      err
+    );
+
     btn.disabled = false;
     btn.textContent = 'Withdraw Claim';
-    btn.title = 'Connection error — please try again.';
+
+    btn.title =
+      'Connection error — please try again.';
   }
 }
 
+
+/* =========================================================
+   HELPERS
+   ========================================================= */
+
 function escapeHtml(str) {
   const div = document.createElement('div');
-  div.textContent = str == null ? '' : String(str);
+  div.textContent =
+    str == null ? '' : String(str);
   return div.innerHTML;
 }
 
+
 function capitalize(word) {
   if (!word) return '';
-  return word.charAt(0).toUpperCase() + word.slice(1);
+
+  return word.charAt(0).toUpperCase() +
+    word.slice(1);
 }
+
 
 async function handleLogout(e) {
   e.preventDefault();
-  const token = localStorage.getItem('rosterup_token');
+
+  const token =
+    localStorage.getItem('rosterup_token');
 
   try {
     await fetch('/api/auth/logout', {
       method: 'POST',
-      headers: token ? { Authorization: `Bearer ${token}` } : {}
+      headers: token
+        ? {
+            Authorization: `Bearer ${token}`
+          }
+        : {}
     });
   } catch (err) {
-    console.error('Logout request failed (signing out locally anyway):', err);
+    console.error(
+      'Logout request failed (signing out locally anyway):',
+      err
+    );
   }
 
   localStorage.removeItem('rosterup_token');
   localStorage.removeItem('rosterup_user');
+
   window.location.href = 'sign-in.html';
 }
